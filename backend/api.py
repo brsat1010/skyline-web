@@ -17,22 +17,39 @@ async def get_me(request: Request):
 
 @router.get("/me/roles")
 async def my_roles(request: Request):
+    from .db import get_db
+    from .roles import DISCORD_ROLES_MAP, ROLE_PERMISSIONS
+
     user = request.session.get("user")
     if not user:
         return {"roles": ["guest"], "permissions": [], "discord_roles": []}
 
-    roles = get_user_roles(user)
+    user_id = str(user["id"])
+
+    # Читаем роли из MongoDB (записанные ботом)
+    doc = await get_db().user_roles.find_one({"_id": user_id})
+    discord_roles = doc.get("roles", []) if doc else []
+
+    # Мапим на роли сайта
+    site_roles = set()
+    for role_name in discord_roles:
+        if role_name in DISCORD_ROLES_MAP:
+            site_roles.add(DISCORD_ROLES_MAP[role_name])
+
+    if not site_roles:
+        site_roles.add("guest")
+
     permissions = set()
-    for role in roles:
+    for role in site_roles:
         for perm in ROLE_PERMISSIONS.get(role, []):
             permissions.add(perm)
 
     return {
-        "roles": roles,
+        "roles": list(site_roles),
         "permissions": list(permissions),
-        "discord_roles": user.get("roles", []),
+        "discord_roles": discord_roles,
+        "display_name": doc.get("display_name") if doc else None,
     }
-
 
 @router.get("/pilot/{user_id}")
 async def get_pilot(user_id: str):
