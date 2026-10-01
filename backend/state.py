@@ -1,72 +1,119 @@
-﻿"""Чтение JSON-файлов, которые пишет Discord-бот."""
-import json
+﻿"""Чтение данных из MongoDB."""
 import os
-from pathlib import Path
-from datetime import datetime, timedelta
+from motor.motor_asyncio import AsyncIOMotorClient
+from typing import Optional
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.getenv("BOT_DATA_DIR", str(BASE_DIR.parent))).resolve()
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "skyline")
 
-DB_FILE = DATA_DIR / "database.json"
-FLIGHTS_FILE = DATA_DIR / "active_flights.json"
-ATC_SHIFTS_FILE = DATA_DIR / "atc_shifts.json"
-ATIS_FILE = DATA_DIR / "atis.json"
-STUDENTS_FILE = DATA_DIR / "students.json"
+_client: Optional[AsyncIOMotorClient] = None
+_db = None
 
 
-def _load(path, default):
-    if not path.exists():
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[STATE] {path}: {e}")
-        return default
+def get_client() -> AsyncIOMotorClient:
+    global _client
+    if _client is None:
+        if not MONGO_URI:
+            raise RuntimeError("MONGO_URI не задан в .env")
+        _client = AsyncIOMotorClient(MONGO_URI)
+    return _client
 
 
-def get_database():
-    return _load(DB_FILE, {"pilots": {}, "flights_history": [], "warns": {}, "atc_reviews": {}})
+def get_db():
+    global _db
+    if _db is None:
+        _db = get_client()[MONGO_DB_NAME]
+    return _db
 
 
-def get_flights():
-    return _load(FLIGHTS_FILE, {})
+async def get_database():
+    """Возвращает весь документ database (для совместимости)."""
+    db = get_db()
+
+    pilots = {}
+    async for doc in db.pilots.find({}):
+        uid = doc.pop("_id")
+        pilots[str(uid)] = doc
+
+    history = []
+    async for doc in db.flights_history.find({}).sort("_id", -1).limit(500):
+        doc.pop("_id", None)
+        history.append(doc)
+
+    warns = {}
+    async for doc in db.warns.find({}):
+        uid = doc.pop("_id")
+        warns[str(uid)] = doc.get("items", [])
+
+    atc_reviews = {}
+    async for doc in db.atc_reviews.find({}):
+        uid = doc.pop("_id")
+        atc_reviews[str(uid)] = doc
+
+    return {
+        "pilots": pilots,
+        "flights_history": history,
+        "warns": warns,
+        "atc_reviews": atc_reviews,
+    }
 
 
-def get_shifts():
-    return _load(ATC_SHIFTS_FILE, {})
+async def get_flights():
+    flights = {}
+    async for doc in get_db().active_flights.find({}):
+        pilot_id = doc.pop("_id")
+        flights[str(pilot_id)] = doc
+    return flights
 
 
-def get_atis():
-    return _load(ATIS_FILE, {})
+async def get_shifts():
+    shifts = {}
+    async for doc in get_db().atc_shifts.find({}):
+        icao = doc.pop("_id")
+        shifts[icao] = doc
+    return shifts
 
 
-def get_students():
-    return _load(STUDENTS_FILE, {})
+async def get_atis():
+    atis = {}
+    async for doc in get_db().atis.find({}):
+        icao = doc.pop("_id")
+        atis[icao] = doc
+    return atis
 
 
-def get_pilot(user_id):
-    db = get_database()
+async def get_students():
+    students = {}
+    async for doc in get_db().students.find({}):
+        uid = doc.pop("_id")
+        students[str(uid)] = doc
+    return students
+
+
+async def get_pilot(user_id: str):
     uid = str(user_id)
-    p = db.get("pilots", {}).get(uid)
-    if not p:
+    doc = await get_db().pilots.find_one({"_id": uid})
+    if not doc:
         return {"flights": 0, "hours": 0.0, "routes": {},
                 "first_flight": None, "last_flight": None,
                 "display_name": None}
-    return p
+    doc.pop("_id", None)
+    return doc
 
 
-def get_flight_history(user_id, limit=10):
-    db = get_database()
+async def get_flight_history(user_id: str, limit=10):
     uid = str(user_id)
-    history = [f for f in db.get("flights_history", []) if str(f.get("user_id")) == uid]
-    return history[-limit:][::-1]
+    cursor = get_db().flights_history.find({"user_id": uid}).sort("_id", -1).limit(limit)
+    history = []
+    async for doc in cursor:
+        doc.pop("_id", None)
+        history.append(doc)
+    return history
 
 
-def _format_pilot(uid, p):
-    """Превращает запись пилота в безопасный ответ."""
+async def _format_pilot(uid, p):
     return {
-        "user_id": uid,
+        "user_id": str(uid),
         "display_name": p.get("display_name") or f"Пилот {str(uid)[-4:]}",
         "flights": p.get("flights", 0),
         "hours": p.get("hours", 0),
@@ -76,73 +123,45 @@ def _format_pilot(uid, p):
     }
 
 
-def get_top_pilots(limit=10):
-    db = get_database()
-    pilots = db.get("pilots", {})
-    sorted_p = sorted(pilots.items(),
-                      key=lambda x: x[1].get("flights", 0),
-                      reverse=True)[:limit]
-    return [_format_pilot(uid, p) for uid, p in sorted_p if p.get("flights", 0) > 0]
-
-
-def get_top_atc(limit=10):
-    db = get_database()
-    stats = db.get("atc_reviews", {})
-    sorted_s = sorted(stats.items(),
-                      key=lambda x: x[1].get("reviewed", 0),
-                      reverse=True)[:limit]
-    return [
-        {
-            "user_id": uid,
-            "user_name": s.get("user_name") or f"УВД {str(uid)[-4:]}",
-            "reviewed": s.get("reviewed", 0),
-            "approved": s.get("approved", 0),
-            "rejected": s.get("rejected", 0),
-        }
-        for uid, s in sorted_s
-        if s.get("reviewed", 0) > 0
-    ]
-
-
-def get_stats():
-    db = get_database()
-    flights = get_flights()
-    shifts = get_shifts()
-    return {
-        "total_pilots": len(db.get("pilots", {})),
-        "total_flights": len(db.get("flights_history", [])),
-        "active_flights": len(flights),
-        "active_shifts": len(shifts),
-        "total_reviews": sum(s.get("reviewed", 0) for s in db.get("atc_reviews", {}).values()),
-    }
-
-
-def get_weekly_activity():
-    """Реальная активность за последние 7 дней из flights_history."""
-    db = get_database()
-    history = db.get("flights_history", [])
-    today = datetime.now().date()
-    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-
-    # Последние 7 дней (включая сегодня)
+async def get_top_pilots(limit=10):
+    cursor = get_db().pilots.find({"flights": {"$gt": 0}}).sort("flights", -1).limit(limit)
     result = []
-    for i in range(6, -1, -1):
-        day = today - timedelta(days=i)
-        count = 0
-        for f in history:
-            at = f.get("at")
-            if not at:
-                continue
-            try:
-                # Формат: "2026-10-01 14:30"
-                d = datetime.strptime(at, "%Y-%m-%d %H:%M").date()
-                if d == day:
-                    count += 1
-            except ValueError:
-                continue
+    async for doc in cursor:
+        uid = doc.pop("_id")
+        result.append(await _format_pilot(uid, doc))
+    return result
+
+
+async def get_top_atc(limit=10):
+    cursor = get_db().atc_reviews.find({"reviewed": {"$gt": 0}}).sort("reviewed", -1).limit(limit)
+    result = []
+    async for doc in cursor:
+        uid = doc.pop("_id")
         result.append({
-            "day": days[day.weekday()],
-            "date": day.strftime("%d.%m"),
-            "count": count,
+            "user_id": str(uid),
+            "user_name": doc.get("user_name") or f"УВД {str(uid)[-4:]}",
+            "reviewed": doc.get("reviewed", 0),
+            "approved": doc.get("approved", 0),
+            "rejected": doc.get("rejected", 0),
         })
     return result
+
+
+async def get_stats():
+    db = get_db()
+    total_pilots = await db.pilots.count_documents({})
+    total_flights = await db.flights_history.count_documents({})
+    active_flights = await db.active_flights.count_documents({})
+    active_shifts = await db.atc_shifts.count_documents({})
+
+    total_reviews = 0
+    async for doc in db.atc_reviews.find({}):
+        total_reviews += doc.get("reviewed", 0)
+
+    return {
+        "total_pilots": total_pilots,
+        "total_flights": total_flights,
+        "active_flights": active_flights,
+        "active_shifts": active_shifts,
+        "total_reviews": total_reviews,
+    }

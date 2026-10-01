@@ -46,10 +46,10 @@ async def push_loop():
         await asyncio.sleep(5)
         try:
             data = {
-                "flights": state.get_flights(),
-                "shifts": state.get_shifts(),
-                "atis": state.get_atis(),
-                "stats": state.get_stats(),
+                "flights": await state.get_flights(),
+                "shifts": await state.get_shifts(),
+                "atis": await state.get_atis(),
+                "stats": await state.get_stats(),
             }
             fp = json.dumps(data, sort_keys=True, default=str)
             if fp != last_fp:

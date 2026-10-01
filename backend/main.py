@@ -26,6 +26,11 @@ async def lifespan(app: FastAPI):
     print("[WEB] Сервер запущен")
     yield
     task.cancel()
+    try:
+        from . import state
+        state.get_client().close()
+    except Exception:
+        pass
     print("[WEB] Сервер остановлен")
 
 
