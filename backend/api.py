@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from datetime import datetime, timedelta
 from . import state
+from .roles import get_user_roles, ROLE_PERMISSIONS
 
 router = APIRouter(prefix="/api")
 
@@ -12,6 +13,25 @@ async def get_me(request: Request):
     if not user:
         raise HTTPException(401, "Не авторизован")
     return user
+
+
+@router.get("/me/roles")
+async def my_roles(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return {"roles": ["guest"], "permissions": [], "discord_roles": []}
+
+    roles = get_user_roles(user)
+    permissions = set()
+    for role in roles:
+        for perm in ROLE_PERMISSIONS.get(role, []):
+            permissions.add(perm)
+
+    return {
+        "roles": roles,
+        "permissions": list(permissions),
+        "discord_roles": user.get("roles", []),
+    }
 
 
 @router.get("/pilot/{user_id}")
@@ -26,40 +46,29 @@ async def get_history(user_id: str):
 
 @router.get("/pilot/{user_id}/extended")
 async def get_pilot_extended(user_id: str):
-    """Расширенный профиль: статистика + ачивки."""
     pilot = await state.get_pilot(user_id)
 
     flights = pilot.get("flights", 0)
     hours = pilot.get("hours", 0)
     routes = pilot.get("routes", {})
 
-    achievements = []
-
-    achievements.append({
-        "id": "first_flight", "name": "Первый полёт", "emoji": "🛫",
-        "description": "Выполнить первый рейс" if flights >= 1 else f"Выполнить первый рейс (у тебя {flights})",
-        "unlocked": flights >= 1,
-    })
-    achievements.append({
-        "id": "ten_flights", "name": "Опытный пилот", "emoji": "✈️",
-        "description": "10 рейсов" if flights >= 10 else f"10 рейсов (у тебя {flights})",
-        "unlocked": flights >= 10,
-    })
-    achievements.append({
-        "id": "fifty_flights", "name": "Ветеран", "emoji": "🎖️",
-        "description": "50 рейсов" if flights >= 50 else f"50 рейсов (у тебя {flights})",
-        "unlocked": flights >= 50,
-    })
-    achievements.append({
-        "id": "ten_hours", "name": "10 часов в небе", "emoji": "🕐",
-        "description": f"10 часов налёта ({hours:.1f} ч)" if hours >= 10 else f"10 часов налёта (у тебя {hours:.1f} ч)",
-        "unlocked": hours >= 10,
-    })
-    achievements.append({
-        "id": "hundred_hours", "name": "Мастер неба", "emoji": "👑",
-        "description": f"100 часов налёта ({hours:.1f} ч)" if hours >= 100 else f"100 часов налёта (у тебя {hours:.1f} ч)",
-        "unlocked": hours >= 100,
-    })
+    achievements = [
+        {"id": "first_flight", "name": "Первый полёт", "emoji": "🛫",
+         "description": "Выполнить первый рейс" if flights >= 1 else f"Выполнить первый рейс (у тебя {flights})",
+         "unlocked": flights >= 1},
+        {"id": "ten_flights", "name": "Опытный пилот", "emoji": "✈️",
+         "description": "10 рейсов" if flights >= 10 else f"10 рейсов (у тебя {flights})",
+         "unlocked": flights >= 10},
+        {"id": "fifty_flights", "name": "Ветеран", "emoji": "🎖️",
+         "description": "50 рейсов" if flights >= 50 else f"50 рейсов (у тебя {flights})",
+         "unlocked": flights >= 50},
+        {"id": "ten_hours", "name": "10 часов в небе", "emoji": "🕐",
+         "description": f"10 часов налёта ({hours:.1f} ч)" if hours >= 10 else f"10 часов налёта (у тебя {hours:.1f} ч)",
+         "unlocked": hours >= 10},
+        {"id": "hundred_hours", "name": "Мастер неба", "emoji": "👑",
+         "description": f"100 часов налёта ({hours:.1f} ч)" if hours >= 100 else f"100 часов налёта (у тебя {hours:.1f} ч)",
+         "unlocked": hours >= 100},
+    ]
 
     favorite_route = None
     if routes:
@@ -125,10 +134,9 @@ async def get_stats():
 
 @router.get("/chart/weekly")
 async def chart_weekly():
-    """Реальная активность за 7 дней."""
-    db = state.get_db()
+    mongo = __import__("backend.db", fromlist=["get_db"]).get_db()
     history = []
-    async for doc in db.flights_history.find({}):
+    async for doc in mongo.flights_history.find({}):
         doc.pop("_id", None)
         history.append(doc)
 
