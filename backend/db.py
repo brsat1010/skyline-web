@@ -29,11 +29,9 @@ def get_db():
 async def ensure_indexes():
     """Создаёт индексы для быстрого поиска."""
     db = get_db()
-    await db.pilots.create_index("_id", unique=True)
-    await db.atc_reviews.create_index("_id", unique=True)
-    await db.atis.create_index("_id", unique=True)
-    await db.atc_shifts.create_index("_id", unique=True)
-    await db.students.create_index("_id", unique=True)
+
+    # _id НЕ требует индекса — он уникален по умолчанию
+
     await db.flights_history.create_index("user_id")
     await db.flights_history.create_index("at")
     await db.active_flights.create_index("status")
@@ -41,4 +39,5 @@ async def ensure_indexes():
     await db.event_signups.create_index("user_id")
     await db.tickets.create_index("user_id")
     await db.tickets.create_index("status")
+
     print("[DB] Индексы созданы")
